@@ -59,7 +59,7 @@
         const CUBIE_SIZE = 1;
         const GAP = 0.05;
         const TURN_SPEED = 15; // Degrees per frame
-        const DRAG_THRESHOLD = 50; // Pixels needed to register a swipe
+        const DRAG_THRESHOLD = 50; // Pixels needed to register a swipe (screen space)
 
         // Standard Rubik's Cube Colors (Hex)
         const COLORS = {
@@ -69,6 +69,7 @@
             CORE: 0x0a0a0a, 
         };
 
+        // Rotation definitions (Axis vector, Rotation direction sign)
         const AXES = {
             'x': new THREE.Vector3(1, 0, 0),
             'y': new THREE.Vector3(0, 1, 0),
@@ -115,7 +116,7 @@
             // 3. Camera and Controls
             camera.position.set(3, 4, 5);
             controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDDamping = true;
+            controls.enableDamping = true;
             controls.dampingFactor = 0.05;
             controls.minDistance = 5;
             controls.maxDistance = 10;
@@ -172,6 +173,7 @@
                         for (let i = 0; i < 6; i++) {
                             let isOuterFace = false;
                             
+                            // Determine which faces are visible (3x3 outer layer)
                             if (i === 0 && x === CUBE_SIZE - 1) isOuterFace = true; // +X (R)
                             if (i === 1 && x === 0) isOuterFace = true;             // -X (L)
                             if (i === 2 && y === CUBE_SIZE - 1) isOuterFace = true; // +Y (U)
@@ -196,7 +198,7 @@
                         );
                         
                         cubie.userData = {
-                            originalPos: { x, y, z },
+                            originalPos: { x, y, z }, // Used to identify which slice the cubie belongs to
                         };
 
                         cubies.push(cubie);
@@ -206,7 +208,7 @@
             }
         }
 
-        // --- Move Functions (Same as proven logic) ---
+        // --- Move Functions ---
 
         function startMove(move, isManual = false) {
             if (currentMove) {
@@ -236,8 +238,9 @@
                 isManual: isManual
             };
             
-            // If manual, remove the move from scramble history
+            // Update scramble history
             if (isManual && scrambleMoves.length > 0) {
+                // If the manual move is the inverse of the last scramble move, cancel it out
                 const lastScrambleMove = scrambleMoves[scrambleMoves.length - 1];
                 if (getInverseMove(lastScrambleMove) === move) {
                     scrambleMoves.pop();
@@ -249,7 +252,7 @@
                 scrambleMoves.push(move);
             }
 
-            controls.enabled = false; // Disable orbit controls during rotation
+            controls.enabled = false; // MUST be disabled during rotation
             currentMoveStarted = true;
         }
 
@@ -260,10 +263,11 @@
             let sliceIndex;
             const baseMove = move.charAt(0); 
             
+            // Determine which layer index to select based on the move name
             if (['L', 'D', 'B'].includes(baseMove)) {
-                sliceIndex = 0; 
+                sliceIndex = 0; // The layer on the negative side of the axis
             } else if (['R', 'U', 'F'].includes(baseMove)) {
-                sliceIndex = CUBE_SIZE - 1; 
+                sliceIndex = CUBE_SIZE - 1; // The layer on the positive side of the axis
             } else {
                 return []; 
             }
@@ -277,19 +281,21 @@
             const pivot = new THREE.Object3D();
             scene.add(pivot);
             cubieList.forEach(cubie => {
+                // Attach the cubie to the pivot object
                 pivot.attach(cubie);
             });
             return pivot;
         }
         
         function unGroupCubies(cubieList, pivot) {
+            // Re-attach cubies to the scene and update their original position data
             cubieList.forEach(cubie => {
                 scene.attach(cubie);
                 updateOriginalPositions(cubie);
             });
             scene.remove(pivot);
             
-            controls.enabled = true; // Re-enable orbit controls
+            controls.enabled = true; // Re-enable orbit controls when move is done
             currentMoveStarted = false;
         }
 
@@ -300,8 +306,10 @@
             cubie.updateWorldMatrix(true, false); 
             cubie.getWorldPosition(worldPos);
             
+            // Converts the world coordinate back to the 0-2 index
             const coordToIndex = (coord) => {
-                const index = Math.round((coord + offset) / size);
+                // Round to the nearest whole number for the index
+                const index = Math.round((coord + offset) / size); 
                 return THREE.MathUtils.clamp(index, 0, CUBE_SIZE - 1);
             };
 
@@ -327,7 +335,6 @@
         function onMouseDown(event) {
             if (currentMove || currentMoveStarted) return;
             isDragging = true;
-            controls.enabled = false; // Disable orbit control on drag start
             startMousePos.copy(getMouseVector(event));
             
             raycaster.setFromCamera(startMousePos, camera);
@@ -339,9 +346,13 @@
                 
                 // Get the world normal of the face that was hit
                 targetFaceNormal.copy(intersect.face.normal).transformDirection(targetCubie.matrixWorld);
+                
+                // If we hit a cubie, temporarily disable OrbitControls to detect a slice drag
+                controls.enabled = false;
             } else {
                 targetCubie = null;
-                controls.enabled = true; // Re-enable if no cubie hit
+                // If nothing is hit, controls remain ENABLED for orbiting
+                controls.enabled = true; 
             }
         }
         
@@ -352,46 +363,59 @@
 
 
         function onMouseMove(event) {
-            if (!isDragging || currentMove || !targetCubie) return;
+            // Only need to worry about controls if we are currently trying to drag a face
+            if (isDragging && targetCubie) {
+                controls.enabled = false;
+            }
         }
         
         function onTouchMove(event) {
-            if (!isDragging || currentMove || !targetCubie) return;
-            // Prevent camera orbit if drag is over cubie
-            controls.enabled = false;
+            if (isDragging && targetCubie) {
+                controls.enabled = false;
+            }
         }
 
 
         function onMouseUp(event) {
-            if (!isDragging || currentMove || !targetCubie) {
+            if (!isDragging || currentMove) {
+                // Reset dragging state and ensure controls are on if nothing happened
                 isDragging = false;
                 controls.enabled = true;
                 return;
             }
 
             isDragging = false;
+            
+            if (!targetCubie) {
+                 // If the click started on the background, the orbit controls handled it, we just reset state
+                controls.enabled = true; 
+                return;
+            }
+
             const endMousePos = getMouseVector(event);
 
             // Calculate drag distance in screen space
             const dx = endMousePos.x - startMousePos.x;
             const dy = endMousePos.y - startMousePos.y;
             
-            const pixelDistance = Math.sqrt(dx * dx + dy * dy) * window.innerWidth; // Convert to rough pixel measure
+            // Calculate pixel distance (approximated for screen density)
+            const pixelDistance = Math.sqrt(dx * dx + dy * dy) * window.innerWidth;
 
             if (pixelDistance < DRAG_THRESHOLD) {
-                // If drag distance is too small, treat it as a failed move/camera slight movement
+                // Drag too small, user likely just tapped or tried to orbit without hitting background
                 targetCubie = null;
                 controls.enabled = true;
                 return;
             }
             
-            // Determine move based on face normal and swipe direction
-            const move = determineMove(targetFaceNormal, dx, dy);
+            // Determine move using the robust logic
+            const move = determineMove(targetFaceNormal, dx, dy, camera);
             
             if (move) {
                 startMove(move, true); // True indicates a manual move
             } else {
-                controls.enabled = true; // Re-enable if no move was determined
+                // If a drag was detected but didn't map to a valid move (e.g., drag along the face axis), re-enable controls
+                controls.enabled = true; 
             }
             
             targetCubie = null;
@@ -401,94 +425,106 @@
             onMouseUp(event.changedTouches[0]);
         }
 
-        function determineMove(normal, dx, dy) {
-            let axis, sliceIndex, move;
-            
-            // Normalize the normal vector to a simple direction (+-1)
+        /**
+         * Determines the correct Rubik's move (e.g., 'R', 'U\'', 'F') based on the clicked face normal
+         * and the screen-space drag vector (dx, dy) relative to the camera's orientation.
+         */
+        function determineMove(normal, dx, dy, camera) {
+            // Normalize the normal vector to a simple axis (+-1, 0, 0, etc.)
             const n = new THREE.Vector3().copy(normal).round();
+            let axis, baseMove;
 
-            // --- Determine Axis and Slice ---
-            if (Math.abs(n.x) > 0.9) {
-                axis = 'x';
-                sliceIndex = n.x > 0 ? CUBE_SIZE - 1 : 0; // R or L
-            } else if (Math.abs(n.y) > 0.9) {
-                axis = 'y';
-                sliceIndex = n.y > 0 ? CUBE_SIZE - 1 : 0; // U or D
-            } else if (Math.abs(n.z) > 0.9) {
-                axis = 'z';
-                sliceIndex = n.z > 0 ? CUBE_SIZE - 1 : 0; // F or B
+            // 1. Determine the axis of rotation and the base move (R, L, U, D, F, B)
+            if (Math.abs(n.x) > 0.9) { 
+                axis = 'x'; baseMove = n.x > 0 ? 'R' : 'L'; 
+            } else if (Math.abs(n.y) > 0.9) { 
+                axis = 'y'; baseMove = n.y > 0 ? 'U' : 'D'; 
+            } else if (Math.abs(n.z) > 0.9) { 
+                axis = 'z'; baseMove = n.z > 0 ? 'F' : 'B'; 
             } else {
                 return null;
             }
 
-            // --- Determine Move Direction (Clockwise/Counter-clockwise) ---
+            const isHorizontalSwipe = Math.abs(dx) > Math.abs(dy);
+            const swipeMagnitude = isHorizontalSwipe ? dx : dy;
             
-            // Helper to get camera direction relative to the clicked face
-            const cameraDir = new THREE.Vector3().subVectors(camera.position, targetCubie.position).normalize();
+            // 2. Determine world vectors for screen's right and up
+            const cameraRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+            const cameraUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
             
-            // The cross product determines the positive rotation direction (Right Hand Rule)
-            // If the camera is roughly aligned with the normal, X swipe is R/L, Y swipe is U/D
-            
-            let swipeDir = 0; // 1 for positive, -1 for negative rotation relative to cube logic
+            let rotationAxisWorld = AXES[axis];
+            let rotationMove = null;
+            let targetVector = new THREE.Vector3(); // The vector on the face that the swipe is parallel to
 
-            if (axis === 'x') { // R/L Face
-                // Rotation is around X-axis. Swipe plane is YZ.
-                // We use Y (screen up/down) and Z (screen right/left projection)
+            // 3. Determine the 3D direction of the swipe for each face
+            if (axis === 'x') { // R/L Faces (Rotation around X)
+                if (isHorizontalSwipe) return null; // Only vertical swipe should trigger R/L
                 
-                // Get the world up vector projected onto the screen (approx Y axis)
-                const worldUp = new THREE.Vector3(0, 1, 0).applyQuaternion(controls.object.quaternion).y;
+                // Rotation plane is YZ. Target vector is orthogonal to the rotation axis and screen right (to project onto the face plane).
+                targetVector.crossVectors(rotationAxisWorld, cameraRight); 
                 
-                if (Math.abs(dy) > Math.abs(dx)) { // Dominant vertical swipe
-                    // Vertical swipe (dy > 0 is up, dy < 0 is down)
-                    // If camera is looking from +Z (default), Up swipe = F->U = R
-                    // Since R is dir=-1, and L is dir=1, R face: up-swipe is R (dir=-1)
-                    swipeDir = dy > 0 ? -1 : 1; 
-                } else { // Dominant horizontal swipe
-                    // Horizontal swipe (dx > 0 is right, dx < 0 is left)
-                    // This is less intuitive, ignoring for simplicity
-                    return null;
-                }
+                // The dot product tells us if screen UP (dy) aligns with the calculated targetVector
+                const dot = targetVector.dot(cameraUp);
+                
+                // isCW = is Clockwise (R, U, F, D', L', B')
+                // A positive dot means screen UP aligns with the direction that produces a CW move for R
+                const isCW = (dot * swipeMagnitude) > 0;
 
-                if (sliceIndex === CUBE_SIZE - 1) { // R face
-                    move = swipeDir < 0 ? 'R' : 'R\'';
+                if (baseMove === 'R') {
+                    rotationMove = isCW ? 'R' : 'R\'';
                 } else { // L face
-                    move = swipeDir < 0 ? 'L\'' : 'L'; // L is inverse of R's direction
+                    rotationMove = isCW ? 'L\'' : 'L'; // L is inverse of R's direction
                 }
-            
-            } else if (axis === 'y') { // U/D Face
-                // Rotation is around Y-axis. Swipe plane is XZ.
+
+            } else if (axis === 'y') { // U/D Faces (Rotation around Y)
+                if (!isHorizontalSwipe) return null; // Only horizontal swipe should trigger U/D
+
+                // Rotation plane is XZ. Target vector is orthogonal to the rotation axis and screen up.
+                targetVector.crossVectors(rotationAxisWorld, cameraUp); 
                 
-                if (Math.abs(dx) > Math.abs(dy)) { // Dominant horizontal swipe
-                    // Horizontal swipe (dx > 0 is right, dx < 0 is left)
-                    swipeDir = dx > 0 ? 1 : -1; 
-                } else {
-                    return null;
-                }
+                // The dot product tells us if screen RIGHT (dx) aligns with the calculated targetVector
+                const dot = targetVector.dot(cameraRight);
+
+                // A positive dot means screen RIGHT aligns with the direction that produces a CW move for U
+                const isCW = (dot * swipeMagnitude) > 0;
                 
-                if (sliceIndex === CUBE_SIZE - 1) { // U face
-                    move = swipeDir > 0 ? 'U' : 'U\'';
+                if (baseMove === 'U') {
+                    rotationMove = isCW ? 'U' : 'U\'';
                 } else { // D face
-                    move = swipeDir > 0 ? 'D\'' : 'D'; 
+                    rotationMove = isCW ? 'D\'' : 'D'; // D is inverse of U's direction
                 }
 
-            } else if (axis === 'z') { // F/B Face
-                // Rotation is around Z-axis. Swipe plane is XY.
+            } else if (axis === 'z') { // F/B Faces (Rotation around Z)
+                // We check which swipe component (horizontal or vertical) is stronger
                 
-                if (Math.abs(dx) > Math.abs(dy)) { // Dominant horizontal swipe
-                    // Horizontal swipe (dx > 0 is right, dx < 0 is left)
-                    swipeDir = dx > 0 ? -1 : 1; 
-                } else {
-                    return null;
-                }
+                if (isHorizontalSwipe) {
+                    // Horizontal Swipe (Rotation in XY plane, primarily X-axis movement on face)
+                    targetVector.crossVectors(rotationAxisWorld, cameraUp);
+                    const dot = targetVector.dot(cameraRight);
+                    const isCW = (dot * swipeMagnitude) > 0;
 
-                if (sliceIndex === CUBE_SIZE - 1) { // F face
-                    move = swipeDir < 0 ? 'F' : 'F\'';
-                } else { // B face
-                    move = swipeDir < 0 ? 'B\'' : 'B'; 
+                    if (baseMove === 'F') {
+                        rotationMove = isCW ? 'F' : 'F\'';
+                    } else { // B face
+                        rotationMove = isCW ? 'B\'' : 'B';
+                    }
+                } else {
+                    // Vertical Swipe (Rotation in XY plane, primarily Y-axis movement on face)
+                    targetVector.crossVectors(rotationAxisWorld, cameraRight);
+                    const dot = targetVector.dot(cameraUp);
+                    
+                    // NOTE: This direction is often inverted for the F face due to visual intuition.
+                    const isCW = (dot * swipeMagnitude) > 0; 
+
+                    if (baseMove === 'F') {
+                        rotationMove = isCW ? 'F\'' : 'F'; // Inverted intuitive direction for F
+                    } else { // B face
+                        rotationMove = isCW ? 'B' : 'B\'';
+                    }
                 }
             }
             
-            return move;
+            return rotationMove;
         }
 
 
@@ -500,6 +536,7 @@
             const moves = ['R', 'L', 'U', 'D', 'F', 'B', 'R\'', 'L\'', 'U\'', 'D\'', 'F\'', 'B\''];
             scrambleMoves = [];
             
+            // 25 random moves for a good scramble
             for (let i = 0; i < 25; i++) {
                 const move = moves[Math.floor(Math.random() * moves.length)];
                 scrambleMoves.push(move);
@@ -518,12 +555,13 @@
         function solveCube() {
             if (currentMove || moveQueue.length > 0 || scrambleMoves.length === 0) return;
             
+            // Apply the inverse of the scramble sequence in reverse order
             const solveSequence = [];
             for (let i = scrambleMoves.length - 1; i >= 0; i--) {
                 solveSequence.push(getInverseMove(scrambleMoves[i]));
             }
             
-            scrambleMoves = []; 
+            scrambleMoves = []; // Clear history after solving
             moveQueue.push(...solveSequence);
         }
 
@@ -533,10 +571,13 @@
             requestAnimationFrame(animate);
 
             if (currentMove) {
+                // Calculate step size in radians
                 const step = currentMove.dir * TURN_SPEED * Math.PI / 180;
                 let newAngle = currentMove.angle + Math.abs(step);
                 
+                // Check if the rotation is complete
                 if (newAngle >= currentMove.targetAngle) {
+                    // Final rotation to snap to exactly 90 degrees
                     const finalStep = currentMove.dir * (currentMove.targetAngle - currentMove.angle);
                     currentMove.cubieGroup.rotateOnAxis(AXES[currentMove.axis], finalStep);
                     
