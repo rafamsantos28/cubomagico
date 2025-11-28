@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Rubik's Cube with Auto-Solve</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a2e; font-family: sans-serif; }
+        canvas { display: block; }
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            display: flex;
+            gap: 15px;
+        }
+        button {
+            padding: 12px 25px;
+            font-size: 16px;
+            font-weight: bold;
+            color: #ffffff;
+            background: linear-gradient(145deg, #0f4c75, #1d6fa5);
+            border: none;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: linear-gradient(145deg, #1d6fa5, #0f4c75);
+            box-shadow: 0 6px 10px rgba(0, 0, 0, 0.6);
+        }
+        button:active {
+            transform: translateY(1px) translateX(-50%);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+        }
+        /* Fix active state relative to parent */
+        #controls button:active {
+             transform: translateY(1px);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <button id="scrambleButton">Scramble Cube</button>
+        <button id="solveButton">Solve Cube</button>
+    </div>
+
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls for camera interaction -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // --- Configuration Constants ---
+        const CUBE_SIZE = 3;
+        const CUBIE_SIZE = 1;
+        const GAP = 0.05;
+        const TURN_SPEED = 15; // Degrees per frame
+        
+        // Standard Rubik's Cube Colors (Hex)
+        const COLORS = {
+            U: 0xFFFF00, // Yellow (Up)
+            D: 0xFFFFFF, // White (Down)
+            F: 0x0000FF, // Blue (Front)
+            B: 0x00FF00, // Green (Back)
+            L: 0xFF8800, // Orange (Left)
+            R: 0xFF0000, // Red (Right)
+            CORE: 0x0a0a0a, // Inner cubie color (dark grey/black)
+        };
+
+        // Rotation constants for standard Rubik's Cube Notation (R, L, U, D, F, B)
+        const AXES = {
+            'x': new THREE.Vector3(1, 0, 0),
+            'y': new THREE.Vector3(0, 1, 0),
+            'z': new THREE.Vector3(0, 0, 1)
+        };
+        const ROTATIONS = {
+            'R': { axis: 'x', dir: -1 }, 'L': { axis: 'x', dir: 1 },
+            'U': { axis: 'y', dir: -1 }, 'D': { axis: 'y', dir: 1 },
+            'F': { axis: 'z', dir: -1 }, 'B': { axis: 'z', dir: 1 },
+            // Prime moves (counter-clockwise)
+            'R\'': { axis: 'x', dir: 1 }, 'L\'': { axis: 'x', dir: -1 },
+            'U\'': { axis: 'y', dir: 1 }, 'D\'': { axis: 'y', dir: -1 },
+            'F\'': { axis: 'z', dir: 1 }, 'B\'': { axis: 'z', dir: -1 }
+        };
+
+        // --- Global Variables ---
+        let scene, camera, renderer, controls;
+        let cubies = [];
+        let currentMove = null;
+        let moveQueue = [];
+        let scrambleMoves = []; // Stores the history of moves for auto-solve
+
+        // --- Setup Functions ---
+        function init() {
+            // 1. Scene setup
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x1a1a2e); // Match background style
+            document.body.appendChild(renderer.domElement);
+
+            // 2. Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 2);
+            scene.add(ambientLight);
+            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 2.5);
+            directionalLight1.position.set(5, 5, 5);
+            scene.add(directionalLight1);
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 1.5);
+            directionalLight2.position.set(-5, -5, -5);
+            scene.add(directionalLight2);
+
+
+            // 3. Create the Cubies
+            createCube();
+
+            // 4. Camera and Controls
+            camera.position.set(3, 4, 5);
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 5;
+            controls.maxDistance = 10;
+            controls.update();
+
+            // 5. Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            document.getElementById('scrambleButton').addEventListener('click', scrambleCube);
+            document.getElementById('solveButton').addEventListener('click', solveCube);
+
+            // Start the animation loop
+            animate();
+        }
+        
+        function createCube() {
+            const size = CUBIE_SIZE + GAP;
+            // Center the cube: offset is the distance from the center (0,0,0) to the center of the first cubie.
+            const offset = (CUBE_SIZE - 1) * size / 2;
+            
+            // Define materials for the 6 colored faces and the core cubie
+            const faceColors = [
+                COLORS.R, COLORS.L, // R/L (X-axis)
+                COLORS.U, COLORS.D, // U/D (Y-axis)
+                COLORS.F, COLORS.B  // F/B (Z-axis)
+            ];
+
+            for (let x = 0; x < CUBE_SIZE; x++) {
+                for (let y = 0; y < CUBE_SIZE; y++) {
+                    for (let z = 0; z < CUBE_SIZE; z++) {
+                        
+                        // Skip the center piece for a 3x3x3 cube to avoid collision checks (optional but common)
+                        // if (x === 1 && y === 1 && z === 1) continue; 
+
+                        const materials = [];
+                        for (let i = 0; i < 6; i++) {
+                            // Determine if the face is an outer face (i.e., needs a color sticker)
+                            let isOuterFace = false;
+                            
+                            // Check X-axis faces
+                            if (i === 0 && x === CUBE_SIZE - 1) isOuterFace = true; // Right
+                            if (i === 1 && x === 0) isOuterFace = true;             // Left
+                            // Check Y-axis faces
+                            if (i === 2 && y === CUBE_SIZE - 1) isOuterFace = true; // Up
+                            if (i === 3 && y === 0) isOuterFace = true;             // Down
+                            // Check Z-axis faces
+                            if (i === 4 && z === CUBE_SIZE - 1) isOuterFace = true; // Front (using Z=2 as front here for position consistency)
+                            if (i === 5 && z === 0) isOuterFace = true;             // Back (using Z=0 as back here)
+
+                            if (isOuterFace) {
+                                materials.push(new THREE.MeshLambertMaterial({ color: faceColors[i] }));
+                            } else {
+                                // Inner face material (black core)
+                                materials.push(new THREE.MeshLambertMaterial({ color: COLORS.CORE }));
+                            }
+                        }
+                        
+                        const cubieGeometry = new THREE.BoxGeometry(CUBIE_SIZE, CUBIE_SIZE, CUBIE_SIZE);
+                        const cubie = new THREE.Mesh(cubieGeometry, materials);
+                        
+                        // Position the cubie
+                        cubie.position.set(
+                            x * size - offset,
+                            y * size - offset,
+                            z * size - offset
+                        );
+                        
+                        // Store the abstract coordinates (index 0, 1, or 2) for move selection
+                        cubie.userData = {
+                            originalPos: { x, y, z },
+                        };
+
+                        cubies.push(cubie);
+                        scene.add(cubie);
+                    }
+                }
+            }
+        }
+
+        // --- Move Logic ---
+
+        function startMove(move) {
+            if (currentMove || moveQueue.length > 0) {
+                moveQueue.push(move);
+                return;
+            }
+            
+            const moveData = ROTATIONS[move];
+            if (!moveData) return;
+
+            currentMove = {
+                ...moveData,
+                moveName: move,
+                targetAngle: Math.PI / 2, 
+                angle: 0,
+                cubies: getCubiesForMove(move)
+            };
+            
+            // Group the cubies to the temporary pivot object
+            groupCubies(currentMove.cubies);
+            // The pivot is the parent of the grouped cubies
+            currentMove.cubieGroup = currentMove.cubies[0].parent;
+        }
+
+        function getCubiesForMove(move) {
+            const moveData = ROTATIONS[move];
+            const axis = moveData.axis; // 'x', 'y', or 'z'
+            
+            // Determine the slice index (0 for -ve end, 2 for +ve end)
+            let sliceIndex;
+            
+            // L, D, B are on the 0 index (Min/Negative side)
+            if (['L', 'D', 'B', 'L\'', 'D\'', 'B\'' ].includes(move)) {
+                sliceIndex = 0; 
+            // R, U, F are on the 2 index (Max/Positive side)
+            } else if (['R', 'U', 'F', 'R\'', 'U\'', 'F\'' ].includes(move)) {
+                sliceIndex = CUBE_SIZE - 1; 
+            } else {
+                return []; 
+            }
+            
+            return cubies.filter(cubie => {
+                // Filter cubies based on their abstract grid position
+                return cubie.userData.originalPos[axis] === sliceIndex;
+            });
+        }
+
+        function groupCubies(cubieList) {
+            // Create a temporary pivot object at the scene center
+            const pivot = new THREE.Object3D();
+            scene.add(pivot);
+
+            // Use the correct Three.js attach method to parent the cubies to the pivot
+            // while preserving their world position.
+            cubieList.forEach(cubie => {
+                pivot.attach(cubie);
+            });
+        }
+        
+        function unGroupCubies(cubieList, pivot) {
+            cubieList.forEach(cubie => {
+                // Attach cubie back to the scene root (preserves world position)
+                scene.attach(cubie);
+                // Update the cubie's abstract coordinates for the next move
+                updateOriginalPositions(cubie);
+            });
+            // Remove the temporary pivot from the scene
+            scene.remove(pivot);
+        }
+
+        function updateOriginalPositions(cubie) {
+            // Recalculate the cubie's x, y, z indices based on its new world position
+            const size = CUBIE_SIZE + GAP;
+            const offset = (CUBE_SIZE - 1) * size / 2;
+
+            const worldPos = new THREE.Vector3();
+            cubie.getWorldPosition(worldPos);
+            
+            // Function to map a world coordinate back to a 0, 1, 2 index
+            const coordToIndex = (coord) => {
+                // Add offset to make it non-negative, divide by size, and round to nearest integer
+                const index = Math.round((coord + offset) / size);
+                return THREE.MathUtils.clamp(index, 0, CUBE_SIZE - 1);
+            };
+
+            cubie.userData.originalPos = { 
+                x: coordToIndex(worldPos.x), 
+                y: coordToIndex(worldPos.y), 
+                z: coordToIndex(worldPos.z) 
+            };
+        }
+
+
+        // --- Scramble/Solve Functions ---
+
+        function scrambleCube() {
+            if (currentMove || moveQueue.length > 0) return;
+            
+            // Standard 6 faces, 2 directions each
+            const moves = ['R', 'L', 'U', 'D', 'F', 'B', 'R\'', 'L\'', 'U\'', 'D\'', 'F\'', 'B\''];
+            scrambleMoves = [];
+            
+            // 25-move scramble
+            for (let i = 0; i < 25; i++) {
+                const move = moves[Math.floor(Math.random() * moves.length)];
+                scrambleMoves.push(move);
+                moveQueue.push(move);
+            }
+        }
+
+        function getInverseMove(move) {
+            // The inverse of X is X' and vice-versa.
+            if (move.endsWith('\'')) {
+                return move.slice(0, -1);
+            } else {
+                return move + '\'';
+            }
+        }
+
+        function solveCube() {
+            if (currentMove || moveQueue.length > 0 || scrambleMoves.length === 0) return;
+            
+            // The "solve" sequence is the inverse of the scramble, applied in reverse order.
+            const solveSequence = [];
+            for (let i = scrambleMoves.length - 1; i >= 0; i--) {
+                solveSequence.push(getInverseMove(scrambleMoves[i]));
+            }
+            
+            // Clear scramble history and push the solve sequence
+            scrambleMoves = []; 
+            moveQueue.push(...solveSequence);
+        }
+
+        // --- Animation Loop ---
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (currentMove) {
+                // Rotation amount for this frame (converted to radians)
+                const step = currentMove.dir * TURN_SPEED * Math.PI / 180;
+                let newAngle = currentMove.angle + Math.abs(step);
+                
+                // Check if the rotation is complete (90 degrees or PI/2)
+                if (newAngle >= currentMove.targetAngle) {
+                    // Final move: clamp the rotation to the exact target angle
+                    const finalStep = currentMove.dir * (currentMove.targetAngle - currentMove.angle);
+                    currentMove.cubieGroup.rotateOnAxis(AXES[currentMove.axis], finalStep);
+                    
+                    // Cleanup and un-group
+                    unGroupCubies(currentMove.cubies, currentMove.cubieGroup);
+                    currentMove = null;
+
+                    // Start the next move in the queue
+                    if (moveQueue.length > 0) {
+                        const nextMove = moveQueue.shift();
+                        startMove(nextMove);
+                    }
+                } else {
+                    // Animate the rotation
+                    currentMove.cubieGroup.rotateOnAxis(AXES[currentMove.axis], step);
+                    currentMove.angle = newAngle;
+                }
+            } else if (moveQueue.length > 0) {
+                // If no move is currently running, start the next one
+                startMove(moveQueue.shift());
+            }
+
+            controls.update(); 
+            renderer.render(scene, camera);
+        }
+
+        // --- Utilities ---
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Start the simulation when the page loads
+        window.onload = init; 
+
+    </script>
+</body>
+</html>
