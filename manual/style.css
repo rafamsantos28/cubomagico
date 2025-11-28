@@ -1,0 +1,11 @@
+/* Remove margens padrão e barra de rolagem */
+body { 
+    margin: 0; 
+    overflow: hidden; 
+    background-color: #333; /* Fundo escuro para destacar o cubo */
+}
+
+/* Garante que o canvas de renderização preencha o espaço */
+canvas { 
+    display: block; 
+}
